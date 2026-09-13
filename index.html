@@ -1457,6 +1457,14 @@ tbody tr:hover { background: #eef5fc; }
   }
   function applyLoadedData(data) {
     records = Array.isArray(data.records) ? data.records : [];
+
+    // لا تعرض سجلات صفحة "مدخلات فرع الجموم":
+    // FakeRegistrations + Branch = Al-Jumum
+    records = records.filter(record => !(
+      record.collection === "FakeRegistrations" &&
+      String(record.branch || "").trim() === "الجموم"
+    ));
+
     courses = Array.isArray(data.courses) ? data.courses : [];
     courseMap = new Map(courses.map(course => [course.course, course]));
     selectedRecordIds.clear(); lastDeletedRecords = [];
