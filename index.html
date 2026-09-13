@@ -237,7 +237,7 @@ tbody tr:hover { background: #eef5fc; }
 
       <div class="filter-actions">
         <button class="secondary" id="clearFiltersButton" type="button">مسح الفلاتر</button>
-        <span class="filter-hint">تظهر السجلات تلقائيًا بمجرد اختيار أي فلتر.</span>
+        <span class="filter-hint">تظهر السجلات تلقائيًا بمجرد اختيار أي فلتر. عند اختيار الجموم تظهر السجلات الجديدة افتراضيًا، ويمكن إظهار الناجح أو الراسب من فلتر الحالة.</span>
       </div>
     </section>
 
@@ -996,10 +996,46 @@ tbody tr:hover { background: #eef5fc; }
   }
   function getFilteredRecords() {
     const filters = selectedFilters();
+
     return records.map(enrichRecord).filter(record => {
+
+      // تطبيق الفلاتر العامة أولاً
       if (!matchesCourse(record, filters, filterOrder)) return false;
-      if (filters.status && record.status !== filters.status) return false;
-      if (filters.createdDate && record.createdDate !== filters.createdDate) return false;
+
+      /*
+        ===== فرع الجموم =====
+        عند اختيار "الجموم" نعرض السجلات بنفس آلية كود الترحيل السابق:
+        1) فقط FakeRegistrations و FakePromotions
+        2) حضوري فقط
+        3) إذا لم تُحدد حالة الطالب: يظهر "جديد" فقط
+        4) عند اختيار ناجح/راسب/جديد: يظهر الاختيار فقط
+      */
+      if (filters.branch === "الجموم") {
+
+        const allowedSource =
+          record._collection === "FakeRegistrations" ||
+          record._collection === "FakePromotions";
+
+        if (!allowedSource) return false;
+
+        if (String(record.courseType || "").trim() !== "حضوري") return false;
+
+        if (!filters.status) {
+          if (record.status !== "جديد") return false;
+        } else {
+          if (record.status !== filters.status) return false;
+        }
+
+      } else {
+        // بقية الفروع تبقى بنفس آلية الكود الحالية
+        if (filters.status && record.status !== filters.status) return false;
+      }
+
+      if (
+        filters.createdDate &&
+        record.createdDate !== filters.createdDate
+      ) return false;
+
       return true;
     });
   }
