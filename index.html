@@ -226,7 +226,6 @@ tbody tr:hover { background: #eef5fc; }
         <label>المستوى<select id="levelFilter" data-field="level" disabled><option value="">اختر المستوى</option></select></label>
         <label>الفترة<select id="periodFilter" data-field="period" disabled><option value="">اختر الفترة</option></select></label>
         <label>المدرب<select id="trainerFilter" data-field="trainer" disabled><option value="">اختر المدرب</option></select></label>
-        <label>الدورة<select id="courseFilter" data-field="course" disabled><option value="">اختر الدورة</option></select></label>
         <label>حالة الطالب<select id="statusFilter" data-field="status"><option value="">كل الحالات</option><option>جديد</option><option>ناجح</option><option>راسب</option></select></label>
         <label>تاريخ الإدخال<select id="createdDateFilter"><option value="">كل تواريخ الإدخال</option></select></label>
         <label>الدورة الهدف
@@ -847,16 +846,16 @@ tbody tr:hover { background: #eef5fc; }
   "use strict";
 
   const MERGED_SECTION = "السيدات والأطفال";
-  const filterOrder = ["courseType", "branch", "section", "program", "level", "period", "trainer", "course"];
+  const filterOrder = ["courseType", "branch", "section", "program", "level", "period", "trainer"];
   const filterIds = {
     courseType: "courseTypeFilter", branch: "branchFilter", section: "sectionFilter",
     program: "programFilter", level: "levelFilter", period: "periodFilter",
-    trainer: "trainerFilter", course: "courseFilter"
+    trainer: "trainerFilter"
   };
   const placeholders = {
     courseType: "اختر نوع الدورة", branch: "اختر الفرع", section: "اختر القسم",
     program: "اختر البرنامج", level: "اختر المستوى", period: "اختر الفترة",
-    trainer: "اختر المدرب", course: "اختر الدورة"
+    trainer: "اختر المدرب"
   };
 
   let courses = [];
@@ -950,11 +949,6 @@ tbody tr:hover { background: #eef5fc; }
     }
     if (filters.program) {
       available = available.filter(c => c.program === filters.program);
-    }
-
-    // إذا تم اختيار دورة حالية في الفلتر، لا نعرضها كدورة هدف.
-    if (filters.course) {
-      available = available.filter(c => c.course !== filters.course);
     }
 
     // إزالة التكرار حسب معرّف الدورة.
