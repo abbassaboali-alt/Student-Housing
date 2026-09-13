@@ -113,7 +113,37 @@ tbody tr:hover { background: #eef5fc; }
 .badge-duplicate { margin-top: 4px; color: #9a2626; background: #ffe2e2; }
 .action-btn { border: 1px solid #b8cadc; color: var(--blue); background: #fff; border-radius: 7px; padding: 7px 10px; font-weight: 800; white-space: nowrap; }
 .action-btn:hover { background: var(--blue-soft); }
-.actions-cell { display: flex; gap: 6px; align-items: center; }
+.actions-cell { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.action-btn {
+  min-height:34px;
+  border-radius:8px;
+  padding:7px 10px;
+  font-size:11px;
+  transition:.15s ease;
+}
+.action-btn:hover { transform:translateY(-1px); box-shadow:0 4px 10px rgba(22,68,120,.10); }
+.row-delete-button { color:#b42318; border-color:#efc3bf; background:#fff7f6; }
+.row-delete-button:hover { background:#ffebe8; }
+.undo-row-button { color:#6941c6; border-color:#d7c8f7; background:#f8f5ff; }
+.undo-row-button:hover { background:#f0eaff; }
+.undo-migration-button { color:#0f6b55; border-color:#b8ddcf; background:#f0faf6; }
+.undo-migration-button:hover { background:#e2f6ee; }
+tr.recently-deleted { opacity:.72; background:#fff3f2 !important; }
+tr.recently-deleted td { text-decoration:none; }
+.recently-deleted-note {
+  display:inline-block; margin-top:4px; padding:3px 7px; border-radius:999px;
+  background:#fee4e2; color:#b42318; font-size:10px; font-weight:800;
+}
+.history-actions {
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:10px 12px; margin:0 22px 12px;
+  border:1px solid #d8e2ee; border-radius:11px; background:#f8fbff;
+}
+.history-actions[hidden] { display:none; }
+.history-actions .history-title { margin-inline-end:auto; color:#41556b; font-size:12px; font-weight:800; }
+.history-actions button { min-height:36px; padding:7px 12px; border-radius:8px; font-weight:800; border:1px solid transparent; }
+.undo-delete-all { color:#9d2c24; background:#fff; border-color:#efc3bf !important; }
+.undo-migrate-all { color:#0d6b53; background:#fff; border-color:#b8ddcf !important; }
 .payment-button { color: #116b44; border-color: #aed6c3; }
 .extra-button { color: #6d4b00; border-color: #dbc88f; }
 .money { direction: ltr; white-space: nowrap; font-weight: 700; }
@@ -262,11 +292,17 @@ tbody tr:hover { background: #eef5fc; }
       </div>
 
       <div id="duplicateAlert" class="duplicate-alert" role="alert" hidden></div>
+
+      <div class="history-actions" id="historyActions" hidden>
+        <span class="history-title">التراجع عن آخر عملية جماعية</span>
+        <button class="undo-delete-all" id="undoDeleteAllButton" type="button" hidden>↶ تراجع عن حذف المجموعة</button>
+        <button class="undo-migrate-all" id="undoMigrationAllButton" type="button" hidden>↶ تراجع عن ترحيل المجموعة</button>
+      </div>
+
       <div class="bulk-toolbar" id="bulkToolbar" hidden>
         <span>تم تحديد <strong id="selectedCount">0</strong> سجل</span>
         <button class="secondary" id="bulkMigrateButton" type="button">ترحيل المحدد</button>
         <button class="danger-button" id="bulkDeleteButton" type="button">حذف المحدد</button>
-        <button class="secondary undo-button" id="undoDeleteButton" type="button" hidden>تراجع عن آخر حذف</button>
       </div>
       <div id="emptyState" class="empty-state">
         <div class="empty-icon">⌕</div>
@@ -624,7 +660,18 @@ tbody tr:hover { background: #eef5fc; }
         data.date,
         data.Date,
         data.TermsAcceptedAt
-      ))
+      )),
+
+      // تمييز سجلات نموذج "تسجيل الطلاب | فرع الجموم" البسيط
+      // حتى لا تظهر داخل نظام الإدارة الحالي.
+      _excludeSimpleJumumRegistration:
+        collection === "FakeRegistrations" &&
+        String(first(data.Branch, data.branch, "")).trim() === "Al-Jumum" &&
+        (
+          Object.prototype.hasOwnProperty.call(data, "LevelChoiceMode") ||
+          Object.prototype.hasOwnProperty.call(data, "NeedsPlacementTest")
+        ) &&
+        String(first(data.CourseType, data.courseType, data.mode, "")).trim() === ""
     };
   }
 
@@ -694,7 +741,9 @@ tbody tr:hover { background: #eef5fc; }
     ];
     const courses = dedupeCourses([
       ...courseDocs.docs.map(normalizeCourse),
-      ...records.map(courseFromRecord)
+      ...records
+        .filter(record => record._excludeSimpleJumumRegistration !== true)
+        .map(courseFromRecord)
     ]);
     return { records, courses, warnings: [registrations.error, promotions.error, courseDocs.error].filter(Boolean) };
   }
@@ -866,6 +915,8 @@ tbody tr:hover { background: #eef5fc; }
   const selectedRecordIds = new Set();
   let pendingMigrationIds = [];
   let lastDeletedRecords = [];
+  let lastMigratedRecords = [];
+  const recentlyDeleted = new Map();
   function selectFor(field) { return document.getElementById(filterIds[field]); }
   function selectedFilters() {
     const result = {};
@@ -999,6 +1050,10 @@ tbody tr:hover { background: #eef5fc; }
 
     return records.map(enrichRecord).filter(record => {
 
+      // لا تعرض سجلات نموذج التسجيل البسيط لفرع الجموم
+      // ولا السجلات التي تظهر في صفحة "مدخلات فرع الجموم".
+      if (record._excludeSimpleJumumRegistration === true) return false;
+
       // تطبيق الفلاتر العامة أولاً
       if (!matchesCourse(record, filters, filterOrder)) return false;
 
@@ -1121,13 +1176,15 @@ tbody tr:hover { background: #eef5fc; }
     body.innerHTML = list.map((r, index) => {
       const duplicate = duplicateKeys.has(`${r.studentId}__${r.course}`);
       const payState = paymentState(r);
-      return `<tr data-record-id="${escapeHtml(r.id)}">
-        <td class="select-column"><input class="row-select" type="checkbox" data-id="${escapeHtml(r.id)}" aria-label="تحديد سجل ${escapeHtml(r.arName)}" ${selectedRecordIds.has(r.id) ? "checked" : ""}></td>
+      const isDeleted = r._recentlyDeleted === true;
+      const isPromotion = r._collection === "FakePromotions";
+      return `<tr data-record-id="${escapeHtml(r.id)}" class="${isDeleted ? "recently-deleted" : ""}">
+        <td class="select-column"><input class="row-select" type="checkbox" data-id="${escapeHtml(r.id)}" aria-label="تحديد سجل ${escapeHtml(r.arName)}" ${selectedRecordIds.has(r.id) ? "checked" : ""} ${isDeleted ? "disabled" : ""}></td>
         <td>${index + 1}</td>
         <td><strong>${escapeHtml(r.studentId)}</strong>${duplicate ? '<br><span class="badge badge-duplicate">مكرر</span>' : ""}</td>
         <td class="student-name"><strong>${escapeHtml(r.arName)}</strong><small>${escapeHtml(r.enName)}</small></td>
         <td dir="ltr">${escapeHtml(r.phone)}</td>
-        <td>${statusBadge(r.status)}</td>
+        <td>${statusBadge(r.status)}${isDeleted ? '<br><span class="recently-deleted-note">محذوف مؤقتًا</span>' : ''}</td>
         <td><strong>${escapeHtml(r.program)}</strong><br><span class="subtle">${escapeHtml(r.level)}</span></td>
         <td><strong>${escapeHtml(r.courseName || r.level || r.course)}</strong><br><span class="subtle">${formatDate(r.startDate)}</span></td>
         <td>${escapeHtml(r.previousCourse || "—")}</td>
@@ -1140,7 +1197,18 @@ tbody tr:hover { background: #eef5fc; }
         <td class="money remaining">${formatMoney(remainingFor(r))}<span class="payment-status ${payState.cls}">${payState.label}</span></td>
         <td>${escapeHtml(r.paymentMethod)}</td>
         <td class="entry-date-cell" dir="rtl"><strong>${escapeHtml(r.createdAtText || "غير مسجل")}</strong></td>
-        <td><div class="actions-cell"><button class="action-btn extra-button" data-id="${escapeHtml(r.id)}" type="button">بيانات إضافية</button><button class="action-btn payment-button" data-id="${escapeHtml(r.id)}" type="button">الدفع</button><button class="action-btn migrate-button" data-id="${escapeHtml(r.id)}" type="button">ترحيل</button></div></td>
+        <td><div class="actions-cell">
+          ${isDeleted
+            ? `<button class="action-btn undo-row-button" data-id="${escapeHtml(r.id)}" type="button">↶ تراجع عن الحذف</button>`
+            : `
+              <button class="action-btn extra-button" data-id="${escapeHtml(r.id)}" type="button">بيانات إضافية</button>
+              <button class="action-btn payment-button" data-id="${escapeHtml(r.id)}" type="button">الدفع</button>
+              <button class="action-btn migrate-button" data-id="${escapeHtml(r.id)}" type="button">ترحيل</button>
+              <button class="action-btn row-delete-button" data-id="${escapeHtml(r.id)}" type="button">حذف</button>
+              ${isPromotion ? `<button class="action-btn undo-migration-button" data-id="${escapeHtml(r.id)}" type="button">↶ تراجع عن الترحيل</button>` : ""}
+            `
+          }
+        </div></td>
       </tr>`;
     }).join("");
     updateStats(list);
@@ -1177,19 +1245,37 @@ tbody tr:hover { background: #eef5fc; }
   function updateBulkToolbar() {
     const existing = new Set(records.map(record => record.id));
     [...selectedRecordIds].forEach(id => { if (!existing.has(id)) selectedRecordIds.delete(id); });
+
     const toolbar = document.getElementById("bulkToolbar");
     document.getElementById("selectedCount").textContent = selectedRecordIds.size;
-    toolbar.hidden = selectedRecordIds.size === 0 && lastDeletedRecords.length === 0;
-    document.getElementById("undoDeleteButton").hidden = lastDeletedRecords.length === 0;
+    toolbar.hidden = selectedRecordIds.size === 0;
+
     const targetSelected = !!document.getElementById("bulkTargetCourseFilter")?.value;
     document.getElementById("bulkMigrateButton").disabled =
       selectedRecordIds.size === 0 || !targetSelected;
     document.getElementById("bulkDeleteButton").disabled = selectedRecordIds.size === 0;
-    const visibleIds = getFilteredRecords().map(record => record.id);
+
+    const visibleIds = getFilteredRecords()
+      .filter(record => !record._recentlyDeleted)
+      .map(record => record.id);
+
     const selectAll = document.getElementById("selectAllRecords");
     selectAll.checked = visibleIds.length > 0 && visibleIds.every(id => selectedRecordIds.has(id));
     selectAll.indeterminate = visibleIds.some(id => selectedRecordIds.has(id)) && !selectAll.checked;
+
+    updateHistoryActions();
   }
+
+  function updateHistoryActions() {
+    const box = document.getElementById("historyActions");
+    const delBtn = document.getElementById("undoDeleteAllButton");
+    const migBtn = document.getElementById("undoMigrationAllButton");
+
+    delBtn.hidden = lastDeletedRecords.length === 0;
+    migBtn.hidden = lastMigratedRecords.length === 0;
+    box.hidden = delBtn.hidden && migBtn.hidden;
+  }
+
   function selectedRecords() { return records.filter(record => selectedRecordIds.has(record.id)); }
   function toggleVisibleSelection(checked) {
     getFilteredRecords().forEach(record => checked ? selectedRecordIds.add(record.id) : selectedRecordIds.delete(record.id));
@@ -1310,11 +1396,15 @@ tbody tr:hover { background: #eef5fc; }
     try {
       const promoted = await Promise.all(chosen.map(record => window.PrudleDB.addPromotion(record, targetCourse)));
       records.push(...promoted);
+      lastMigratedRecords = promoted.map(record => ({ ...record }));
       populateCreatedDateFilter();
       populateBulkTargetCourses();
       selectedRecordIds.clear(); pendingMigrationIds = [];
-      document.getElementById("migrateDialog").close(); updateCascadingFilters(); renderResults();
-      showToast(`تم ترحيل ${promoted.length} سجل وحفظها في FakePromotions.`);
+      document.getElementById("migrateDialog").close();
+      updateCascadingFilters();
+      renderResults();
+      updateHistoryActions();
+      showToast(`تم ترحيل ${promoted.length} سجل. يمكنك التراجع من أمام السجل أو من أعلى الجدول.`);
     } catch (error) {
       console.error(error); showToast("تعذر حفظ الترحيل في FakePromotions.", "error");
     } finally { submit.disabled = false; }
@@ -1326,29 +1416,108 @@ tbody tr:hover { background: #eef5fc; }
     try {
       await window.PrudleDB.softDeleteRecords(chosen);
       lastDeletedRecords = chosen.map(record => ({ ...record }));
-      const deletedIds = new Set(chosen.map(record => record.id));
-      records = records.filter(record => !deletedIds.has(record.id));
-      selectedRecordIds.clear(); populateCreatedDateFilter(); updateCascadingFilters(); populateBulkTargetCourses(); renderResults(); updateBulkToolbar();
-      showToast(`تم حذف ${chosen.length} سجل. يمكنك التراجع من الشريط أعلى الجدول.`);
+      chosen.forEach(record => {
+        record._recentlyDeleted = true;
+        recentlyDeleted.set(record.id, { ...record, _recentlyDeleted: false });
+      });
+      selectedRecordIds.clear();
+      populateCreatedDateFilter();
+      updateCascadingFilters();
+      populateBulkTargetCourses();
+      renderResults();
+      updateBulkToolbar();
+      showToast(`تم حذف ${chosen.length} سجل. يمكنك التراجع من أمام كل سجل أو من أعلى الجدول.`);
     } catch (error) {
       console.error(error); showToast("تعذر حذف السجلات من Firestore.", "error");
     }
   }
-  async function undoLastDelete() {
-    if (!lastDeletedRecords.length) return;
-    const restoring = lastDeletedRecords.map(record => ({ ...record }));
+  async function undoDeleteRecords(recordsToRestore) {
+    if (!recordsToRestore.length) return;
     try {
-      await window.PrudleDB.restoreRecords(restoring);
-      records.push(...restoring); lastDeletedRecords = [];
+      await window.PrudleDB.restoreRecords(recordsToRestore);
+      const ids = new Set(recordsToRestore.map(r => r.id));
+      records.forEach(record => {
+        if (ids.has(record.id)) record._recentlyDeleted = false;
+      });
+      ids.forEach(id => recentlyDeleted.delete(id));
+      lastDeletedRecords = lastDeletedRecords.filter(r => !ids.has(r.id));
       populateCreatedDateFilter();
       updateCascadingFilters();
       populateBulkTargetCourses();
-      renderResults(); updateBulkToolbar();
-      showToast(`تم التراجع وإعادة ${restoring.length} سجل.`);
+      renderResults();
+      updateBulkToolbar();
+      showToast(`تم التراجع وإعادة ${recordsToRestore.length} سجل.`);
     } catch (error) {
-      console.error(error); showToast("تعذر التراجع عن الحذف.", "error");
+      console.error(error);
+      showToast("تعذر التراجع عن الحذف.", "error");
     }
   }
+
+  async function undoLastDelete() {
+    const restoring = lastDeletedRecords.map(record => ({ ...record }));
+    await undoDeleteRecords(restoring);
+  }
+
+  async function undoDeleteRow(recordId) {
+    const record = records.find(r => r.id === recordId);
+    if (!record || !record._recentlyDeleted) return;
+    await undoDeleteRecords([{ ...record, _recentlyDeleted: false }]);
+  }
+
+  async function deleteSingleRecord(recordId) {
+    const record = records.find(r => r.id === recordId);
+    if (!record || record._recentlyDeleted) return;
+    if (!window.confirm(`حذف سجل ${record.arName || "الطالب"}؟ يمكنك التراجع مباشرة بعد الحذف.`)) return;
+
+    try {
+      await window.PrudleDB.softDeleteRecords([record]);
+      record._recentlyDeleted = true;
+      recentlyDeleted.set(record.id, { ...record, _recentlyDeleted: false });
+      lastDeletedRecords = [{ ...record, _recentlyDeleted: false }];
+      selectedRecordIds.delete(record.id);
+      renderResults();
+      updateBulkToolbar();
+      showToast("تم حذف السجل. يمكنك التراجع من الزر أمامه أو من أعلى الجدول.");
+    } catch (error) {
+      console.error(error);
+      showToast("تعذر حذف السجل.", "error");
+    }
+  }
+
+  async function undoMigrationRecords(promotedRecords) {
+    if (!promotedRecords.length) return;
+    try {
+      await window.PrudleDB.softDeleteRecords(promotedRecords);
+      const ids = new Set(promotedRecords.map(r => r.id));
+      records = records.filter(record => !ids.has(record.id));
+      lastMigratedRecords = lastMigratedRecords.filter(r => !ids.has(r.id));
+      selectedRecordIds.clear();
+      populateCreatedDateFilter();
+      updateCascadingFilters();
+      populateBulkTargetCourses();
+      renderResults();
+      updateBulkToolbar();
+      showToast(`تم التراجع عن ترحيل ${promotedRecords.length} سجل.`);
+    } catch (error) {
+      console.error(error);
+      showToast("تعذر التراجع عن الترحيل.", "error");
+    }
+  }
+
+  async function undoMigrationRow(recordId) {
+    const record = records.find(r => r.id === recordId && r._collection === "FakePromotions");
+    if (!record) return;
+    if (!window.confirm(`التراجع عن ترحيل ${record.arName || "الطالب"}؟`)) return;
+    await undoMigrationRecords([record]);
+  }
+
+  async function undoLastMigration() {
+    const batch = lastMigratedRecords.map(record => ({ ...record }));
+    if (!batch.length) return;
+    if (!window.confirm(`التراجع عن ترحيل المجموعة الأخيرة (${batch.length} سجل)؟`)) return;
+    await undoMigrationRecords(batch);
+  }
+
   function openPayment(recordId) {
     const record = records.find(r => r.id === recordId); if (!record) return;
     document.getElementById("paymentRecordId").value = record.id;
@@ -1492,7 +1661,9 @@ tbody tr:hover { background: #eef5fc; }
     empty.querySelector("p").textContent = message;
   }
   function applyLoadedData(data) {
-    records = Array.isArray(data.records) ? data.records : [];
+    records = Array.isArray(data.records)
+      ? data.records.filter(record => record._excludeSimpleJumumRegistration !== true)
+      : [];
 
     // لا تعرض سجلات صفحة "مدخلات فرع الجموم":
     // FakeRegistrations + Branch = Al-Jumum
@@ -1503,7 +1674,10 @@ tbody tr:hover { background: #eef5fc; }
 
     courses = Array.isArray(data.courses) ? data.courses : [];
     courseMap = new Map(courses.map(course => [course.course, course]));
-    selectedRecordIds.clear(); lastDeletedRecords = [];
+    selectedRecordIds.clear();
+    lastDeletedRecords = [];
+    lastMigratedRecords = [];
+    recentlyDeleted.clear();
 
     records.forEach(record => {
       if (!courseMap.has(record.course)) {
@@ -1565,7 +1739,8 @@ tbody tr:hover { background: #eef5fc; }
   document.getElementById("selectAllRecords").addEventListener("change", event => toggleVisibleSelection(event.currentTarget.checked));
   document.getElementById("bulkMigrateButton").addEventListener("click", openBulkMigration);
   document.getElementById("bulkDeleteButton").addEventListener("click", deleteSelectedRecords);
-  document.getElementById("undoDeleteButton").addEventListener("click", undoLastDelete);
+  document.getElementById("undoDeleteAllButton").addEventListener("click", undoLastDelete);
+  document.getElementById("undoMigrationAllButton").addEventListener("click", undoLastMigration);
   document.getElementById("mobileFiltersButton").addEventListener("click", () => toggleMobileFilters());
   document.querySelectorAll("[data-close]").forEach(btn => btn.addEventListener("click", () => document.getElementById(btn.dataset.close).close()));
   document.getElementById("recordsBody").addEventListener("click", event => {
@@ -1573,6 +1748,9 @@ tbody tr:hover { background: #eef5fc; }
     const migrateButton = event.target.closest(".migrate-button");
     const paymentButton = event.target.closest(".payment-button");
     const extraButton = event.target.closest(".extra-button");
+    const deleteButton = event.target.closest(".row-delete-button");
+    const undoDeleteButton = event.target.closest(".undo-row-button");
+    const undoMigrationButton = event.target.closest(".undo-migration-button");
     if (rowSelect) {
       rowSelect.checked ? selectedRecordIds.add(rowSelect.dataset.id) : selectedRecordIds.delete(rowSelect.dataset.id);
       updateBulkToolbar();
@@ -1580,6 +1758,9 @@ tbody tr:hover { background: #eef5fc; }
     if (migrateButton) openMigration(migrateButton.dataset.id);
     if (paymentButton) openPayment(paymentButton.dataset.id);
     if (extraButton) openExtraData(extraButton.dataset.id);
+    if (deleteButton) deleteSingleRecord(deleteButton.dataset.id);
+    if (undoDeleteButton) undoDeleteRow(undoDeleteButton.dataset.id);
+    if (undoMigrationButton) undoMigrationRow(undoMigrationButton.dataset.id);
   });
 
   initializeData();
