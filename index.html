@@ -69,6 +69,12 @@ select:disabled { background: #f2f4f7; color: #9aa5b2; cursor: not-allowed; }
 .secondary { background: #fff; color: var(--blue); border-color: #b9c9da; }
 .filter-hint { color: var(--muted); font-size: 12px; margin-inline-start: auto; }
 .add-button { white-space: nowrap; }
+#bulkTargetCourseFilter {
+  border: 2px solid #164478;
+  background: #f7fbff;
+  font-weight: 800;
+  color: #164478;
+}
 
 .stats { display: flex; flex-wrap: wrap; gap: 8px; }
 .stats span { background: var(--blue-soft); color: var(--blue); padding: 7px 11px; border-radius: 999px; font-size: 11px; font-weight: 700; }
@@ -223,6 +229,11 @@ tbody tr:hover { background: #eef5fc; }
         <label>الدورة<select id="courseFilter" data-field="course" disabled><option value="">اختر الدورة</option></select></label>
         <label>حالة الطالب<select id="statusFilter" data-field="status"><option value="">كل الحالات</option><option>جديد</option><option>ناجح</option><option>راسب</option></select></label>
         <label>تاريخ الإدخال<select id="createdDateFilter"><option value="">كل تواريخ الإدخال</option></select></label>
+        <label>الدورة الهدف
+          <select id="bulkTargetCourseFilter">
+            <option value="">اختر الدورة الهدف</option>
+          </select>
+        </label>
       </div>
 
       <div class="filter-actions">
@@ -633,7 +644,8 @@ tbody tr:hover { background: #eef5fc; }
       startDate: dateValue(first(data.startDate, data.StartingDate)) || "غير محدد",
       trainer: text(first(data.trainer, data.Trainer)) || "غير محدد",
       room: text(first(data.room, data.Room)),
-      fees: number(first(data.fees, data.CourseFee))
+      fees: number(first(data.fees, data.CourseFee)),
+      status: text(first(data.status, data.Status)).toLowerCase()
     };
   }
 
@@ -896,6 +908,77 @@ tbody tr:hover { background: #eef5fc; }
       current[field] = selectFor(field).value;
     });
   }
+
+  function isOpenCourse(course) {
+    const status = String(course?.status || "").trim().toLowerCase();
+
+    // الدورات القادمة من Courses يجب أن تكون مفتوحة.
+    // السجلات المشتقة من الطلاب لا تُستخدم كدورات هدف إذا لم تكن لها حالة.
+    return ["open", "opened", "مفتوح", "مفتوحة"].includes(status);
+  }
+
+  function targetCourseLabel(course) {
+    const name = course.courseName || course.level || course.course || "دورة";
+    const parts = [
+      name,
+      course.period && course.period !== "غير محدد" ? course.period : "",
+      course.trainer && course.trainer !== "غير محدد" ? course.trainer : "",
+      course.room || ""
+    ].filter(Boolean);
+    return parts.join(" — ");
+  }
+
+  function populateBulkTargetCourses() {
+    const select = document.getElementById("bulkTargetCourseFilter");
+    if (!select) return;
+
+    const previous = select.value;
+    const filters = selectedFilters();
+
+    // نعتمد فقط الدورات المفتوحة من مجموعة Courses.
+    let available = courses.filter(isOpenCourse);
+
+    // الدورة الهدف تتبع الفلاتر الحالية: نوع الدورة، الفرع، القسم، البرنامج.
+    if (filters.courseType) {
+      available = available.filter(c => c.courseType === filters.courseType);
+    }
+    if (filters.branch) {
+      available = available.filter(c => c.branch === filters.branch);
+    }
+    if (filters.section) {
+      available = available.filter(c => sectionMatches(c.section, filters.section));
+    }
+    if (filters.program) {
+      available = available.filter(c => c.program === filters.program);
+    }
+
+    // إذا تم اختيار دورة حالية في الفلتر، لا نعرضها كدورة هدف.
+    if (filters.course) {
+      available = available.filter(c => c.course !== filters.course);
+    }
+
+    // إزالة التكرار حسب معرّف الدورة.
+    const seen = new Set();
+    available = available.filter(c => {
+      if (!c.course || seen.has(c.course)) return false;
+      seen.add(c.course);
+      return true;
+    });
+
+    available.sort((a, b) =>
+      targetCourseLabel(a).localeCompare(targetCourseLabel(b), "ar", { numeric: true })
+    );
+
+    select.innerHTML = '<option value="">اختر الدورة الهدف</option>';
+    available.forEach(course => {
+      select.append(new Option(targetCourseLabel(course), course.course));
+    });
+
+    if (previous && available.some(c => c.course === previous)) {
+      select.value = previous;
+    }
+  }
+
   function normalizeMoney(value) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 ? Math.round(number * 100) / 100 : 0;
@@ -1047,8 +1130,13 @@ tbody tr:hover { background: #eef5fc; }
     filterOrder.forEach(field => { selectFor(field).value = ""; });
     document.getElementById("statusFilter").value = "";
     document.getElementById("createdDateFilter").value = "";
+    const targetSelect = document.getElementById("bulkTargetCourseFilter");
+    if (targetSelect) targetSelect.value = "";
     selectedRecordIds.clear();
-    hasAppliedFilters = false; updateCascadingFilters(); renderResults();
+    hasAppliedFilters = false;
+    updateCascadingFilters();
+    populateBulkTargetCourses();
+    renderResults();
     updateBulkToolbar();
   }
   function showToast(message, type = "success") {
@@ -1063,7 +1151,9 @@ tbody tr:hover { background: #eef5fc; }
     document.getElementById("selectedCount").textContent = selectedRecordIds.size;
     toolbar.hidden = selectedRecordIds.size === 0 && lastDeletedRecords.length === 0;
     document.getElementById("undoDeleteButton").hidden = lastDeletedRecords.length === 0;
-    document.getElementById("bulkMigrateButton").disabled = selectedRecordIds.size === 0;
+    const targetSelected = !!document.getElementById("bulkTargetCourseFilter")?.value;
+    document.getElementById("bulkMigrateButton").disabled =
+      selectedRecordIds.size === 0 || !targetSelected;
     document.getElementById("bulkDeleteButton").disabled = selectedRecordIds.size === 0;
     const visibleIds = getFilteredRecords().map(record => record.id);
     const selectAll = document.getElementById("selectAllRecords");
@@ -1124,6 +1214,7 @@ tbody tr:hover { background: #eef5fc; }
       const saved = await window.PrudleDB.addRegistration(record, course);
       records.push(saved);
       populateCreatedDateFilter();
+      populateBulkTargetCourses();
       document.getElementById("addDialog").close(); updateCascadingFilters();
       showToast(prior ? "تمت الإضافة في FakeRegistrations وربط الدورة السابقة." : "تمت إضافة السجل في FakeRegistrations بنجاح.");
       if (hasAppliedFilters) renderResults();
@@ -1143,14 +1234,33 @@ tbody tr:hover { background: #eef5fc; }
   }
   function openBulkMigration() {
     const chosen = selectedRecords();
-    if (!chosen.length) return;
+    if (!chosen.length) {
+      showToast("حدد الطلاب المراد ترحيلهم أولًا.", "error");
+      return;
+    }
+
+    const topTarget = document.getElementById("bulkTargetCourseFilter")?.value || "";
+    if (!topTarget) {
+      showToast("اختر الدورة الهدف من الفلتر أعلى الصفحة أولًا.", "error");
+      return;
+    }
+
+    const targetCourse = courses.find(c => c.course === topTarget);
+    if (!targetCourse || !isOpenCourse(targetCourse)) {
+      showToast("الدورة الهدف غير متاحة أو ليست مفتوحة.", "error");
+      populateBulkTargetCourses();
+      return;
+    }
+
     pendingMigrationIds = chosen.map(record => record.id);
-    const courseTypes = unique(chosen.map(record => record.courseType));
-    const currentCourses = new Set(chosen.map(record => record.course));
-    const compatible = courses.filter(course => !currentCourses.has(course.course) && (!courseTypes.length || courseTypes.includes(course.courseType)));
+
+    // افتح نافذة التأكيد مع تثبيت الدورة التي اختيرت من أعلى الصفحة.
     document.getElementById("migrateRecordId").value = "";
-    document.getElementById("migrateStudentName").textContent = `ترحيل ${chosen.length} سجل محدد`;
-    populateCourseSelect(document.getElementById("targetCourseSelect"), compatible);
+    document.getElementById("migrateStudentName").textContent =
+      `ترحيل ${chosen.length} سجل إلى ${targetCourse.courseName || targetCourse.level || "الدورة المختارة"}`;
+
+    populateCourseSelect(document.getElementById("targetCourseSelect"), [targetCourse]);
+    document.getElementById("targetCourseSelect").value = targetCourse.course;
     document.getElementById("migrateDialog").showModal();
   }
   async function migrateRecord(event) {
@@ -1171,6 +1281,7 @@ tbody tr:hover { background: #eef5fc; }
       const promoted = await Promise.all(chosen.map(record => window.PrudleDB.addPromotion(record, targetCourse)));
       records.push(...promoted);
       populateCreatedDateFilter();
+      populateBulkTargetCourses();
       selectedRecordIds.clear(); pendingMigrationIds = [];
       document.getElementById("migrateDialog").close(); updateCascadingFilters(); renderResults();
       showToast(`تم ترحيل ${promoted.length} سجل وحفظها في FakePromotions.`);
@@ -1187,7 +1298,7 @@ tbody tr:hover { background: #eef5fc; }
       lastDeletedRecords = chosen.map(record => ({ ...record }));
       const deletedIds = new Set(chosen.map(record => record.id));
       records = records.filter(record => !deletedIds.has(record.id));
-      selectedRecordIds.clear(); populateCreatedDateFilter(); updateCascadingFilters(); renderResults(); updateBulkToolbar();
+      selectedRecordIds.clear(); populateCreatedDateFilter(); updateCascadingFilters(); populateBulkTargetCourses(); renderResults(); updateBulkToolbar();
       showToast(`تم حذف ${chosen.length} سجل. يمكنك التراجع من الشريط أعلى الجدول.`);
     } catch (error) {
       console.error(error); showToast("تعذر حذف السجلات من Firestore.", "error");
@@ -1200,7 +1311,9 @@ tbody tr:hover { background: #eef5fc; }
       await window.PrudleDB.restoreRecords(restoring);
       records.push(...restoring); lastDeletedRecords = [];
       populateCreatedDateFilter();
-      updateCascadingFilters(); renderResults(); updateBulkToolbar();
+      updateCascadingFilters();
+      populateBulkTargetCourses();
+      renderResults(); updateBulkToolbar();
       showToast(`تم التراجع وإعادة ${restoring.length} سجل.`);
     } catch (error) {
       console.error(error); showToast("تعذر التراجع عن الحذف.", "error");
@@ -1366,6 +1479,7 @@ tbody tr:hover { background: #eef5fc; }
     populateCreatedDateFilter();
 
     updateCascadingFilters();
+    populateBulkTargetCourses();
     populateCourseSelect(document.getElementById("addCourseSelect"));
     setEmptyMessage(
       "اختر الفلاتر أولًا",
@@ -1389,10 +1503,16 @@ tbody tr:hover { background: #eef5fc; }
   }
 
   filterOrder.forEach(field => selectFor(field).addEventListener("change", () => {
-    updateCascadingFilters(); hasAppliedFilters = hasAnyFilter(); renderResults();
+    updateCascadingFilters();
+    populateBulkTargetCourses();
+    hasAppliedFilters = hasAnyFilter();
+    renderResults();
   }));
   document.getElementById("statusFilter").addEventListener("change", () => { hasAppliedFilters = hasAnyFilter(); renderResults(); });
   document.getElementById("createdDateFilter").addEventListener("change", () => { hasAppliedFilters = hasAnyFilter(); renderResults(); });
+  document.getElementById("bulkTargetCourseFilter").addEventListener("change", () => {
+    updateBulkToolbar();
+  });
   document.getElementById("clearFiltersButton").addEventListener("click", clearFilters);
   document.getElementById("openAddButton").addEventListener("click", openAddDialog);
   document.getElementById("studentIdInput").addEventListener("input", checkExistingStudent);
