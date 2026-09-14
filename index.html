@@ -849,44 +849,118 @@ tr.recently-deleted td { text-decoration:none; }
   function softDeleteRecords(records) { return setDeleted(records, true); }
   function restoreRecords(records) { return setDeleted(records, false); }
 
-  async function addPromotion(source, targetCourse) {
-    const promoted = {
-      ...source,
-      id: "",
-      _docId: "",
-      _collection: "FakePromotions",
-      previousCourse: source.courseName || source.level,
-      targetCourse: targetCourse.courseName || targetCourse.level,
-      course: targetCourse.course,
-      courseName: targetCourse.courseName,
-      courseType: targetCourse.courseType,
-      branch: targetCourse.branch,
-      section: targetCourse.section,
-      program: targetCourse.program,
-      level: targetCourse.level,
-      period: targetCourse.period,
-      startDate: targetCourse.startDate,
-      trainer: targetCourse.trainer,
-      room: targetCourse.room || "",
-      status: source.status
-    };
-    const payload = payloadFor(promoted, targetCourse);
-    payload.fromCourse = {
-      name: source.courseName || source.level,
-      period: source.period === "غير محدد" ? "" : source.period,
-      trainer: source.trainer === "غير محدد" ? "" : source.trainer,
-      room: source.room || "",
-      startDate: source.startDate === "غير محدد" ? "" : source.startDate
-    };
-    payload.targetCourse = promoted.targetCourse;
-    payload.grade = source.grade;
-    payload.createdAt = global.firebase.firestore.FieldValue.serverTimestamp();
-    const ref = await db.collection("FakePromotions").add(payload);
-    const doc = await ref.get();
-    return normalizeRecord(doc, "FakePromotions");
+  async function migrateToStudents(sources, targetCourse) {
+    if (!Array.isArray(sources) || !sources.length) return [];
+    if (sources.length > 200) throw new Error("يمكن ترحيل 200 سجل كحد أقصى في العملية الواحدة");
+
+    // نقرأ النسخة الأصلية كاملة قبل أي حذف حتى يكون التراجع قادرًا على إعادتها كما كانت.
+    const prepared = [];
+    for (const source of sources) {
+      if (!source._collection || !source._docId) throw new Error("مصدر أحد السجلات غير معروف");
+
+      const sourceRef = db.collection(source._collection).doc(source._docId);
+      const sourceSnap = await sourceRef.get();
+      if (!sourceSnap.exists) throw new Error(`السجل الأصلي غير موجود: ${source._docId}`);
+      const originalData = sourceSnap.data();
+
+      const migrated = {
+        ...source,
+        id: "",
+        _docId: "",
+        _collection: "students",
+        previousCourse: source.courseName || source.level,
+        targetCourse: targetCourse.courseName || targetCourse.level,
+        course: targetCourse.course,
+        courseName: targetCourse.courseName,
+        courseType: targetCourse.courseType,
+        branch: targetCourse.branch,
+        section: targetCourse.section,
+        program: targetCourse.program,
+        level: targetCourse.level,
+        period: targetCourse.period,
+        startDate: targetCourse.startDate,
+        trainer: targetCourse.trainer,
+        room: targetCourse.room || "",
+        status: source.status
+      };
+
+      const studentRef = db.collection("students").doc();
+      const studentPayload = {
+        // نحافظ على كل بيانات السجل القديم، بما فيها الرسوم وحقول المستويات الإضافية إن وجدت.
+        ...originalData,
+        ...payloadFor(migrated, targetCourse),
+        Branch: storedBranch(targetCourse.branch),
+        branch: targetCourse.branch,
+        Section: storedSection(targetCourse.section),
+        section: targetCourse.section,
+        CourseType: targetCourse.courseType,
+        courseType: targetCourse.courseType,
+        Program: targetCourse.program,
+        program: targetCourse.program,
+        TrainingCourse: targetCourse.level,
+        level: targetCourse.level,
+        Period: targetCourse.period === "غير محدد" ? "" : targetCourse.period,
+        period: targetCourse.period === "غير محدد" ? "" : targetCourse.period,
+        trainer: targetCourse.trainer === "غير محدد" ? "" : targetCourse.trainer,
+        startDate: targetCourse.startDate === "غير محدد" ? "" : targetCourse.startDate,
+        previousCourse: source.courseName || source.level,
+        targetCourse: targetCourse.courseName || targetCourse.level,
+        fromCourse: {
+          name: source.courseName || source.level,
+          period: source.period === "غير محدد" ? "" : source.period,
+          trainer: source.trainer === "غير محدد" ? "" : source.trainer,
+          room: source.room || "",
+          startDate: source.startDate === "غير محدد" ? "" : source.startDate
+        },
+        grade: source.grade ?? originalData.grade ?? null,
+        migratedAt: global.firebase.firestore.FieldValue.serverTimestamp(),
+        createdAt: global.firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: global.firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      prepared.push({ source, sourceRef, originalData, studentRef, studentPayload });
+    }
+
+    // إنشاء سجل students + حذف المصدر القديم في Batch واحدة.
+    const batch = db.batch();
+    prepared.forEach(item => {
+      batch.set(item.studentRef, item.studentPayload);
+      batch.delete(item.sourceRef);
+    });
+    await batch.commit();
+
+    const results = [];
+    for (const item of prepared) {
+      const studentSnap = await item.studentRef.get();
+      results.push({
+        studentRecord: normalizeRecord(studentSnap, "students"),
+        undo: {
+          sourceCollection: item.source._collection,
+          sourceDocId: item.source._docId,
+          sourceData: item.originalData,
+          studentDocId: item.studentRef.id
+        }
+      });
+    }
+    return results;
   }
 
-  global.PrudleDB = { load, addRegistration, updateRecord, addPromotion, softDeleteRecords, restoreRecords, courseFromRecord };
+  async function undoStudentMigrations(entries) {
+    if (!Array.isArray(entries) || !entries.length) return;
+    if (entries.length > 200) throw new Error("عدد سجلات التراجع أكبر من الحد المسموح");
+
+    const batch = db.batch();
+    entries.forEach(entry => {
+      batch.delete(db.collection("students").doc(entry.studentDocId));
+      batch.set(
+        db.collection(entry.sourceCollection).doc(entry.sourceDocId),
+        entry.sourceData
+      );
+    });
+    await batch.commit();
+  }
+
+  global.PrudleDB = { load, addRegistration, updateRecord, migrateToStudents, undoStudentMigrations, softDeleteRecords, restoreRecords, courseFromRecord };
 })(window);
 
 </script>
@@ -916,6 +990,11 @@ tr.recently-deleted td { text-decoration:none; }
   let pendingMigrationIds = [];
   let lastDeletedRecords = [];
   let lastMigratedRecords = [];
+  // UNDO موجود في ذاكرة JavaScript فقط. عند Refresh يختفي نهائيًا.
+  const migrationUndo = new Map();
+  // IDs of migrations created during THIS page session only.
+  // This is intentionally kept only in memory, so refreshing the page removes undo access.
+  const sessionMigratedIds = new Set();
   const recentlyDeleted = new Map();
   function selectFor(field) { return document.getElementById(filterIds[field]); }
   function selectedFilters() {
@@ -1069,7 +1148,8 @@ tr.recently-deleted td { text-decoration:none; }
 
         const allowedSource =
           record._collection === "FakeRegistrations" ||
-          record._collection === "FakePromotions";
+          record._collection === "FakePromotions" ||
+          (record._collection === "students" && sessionMigratedIds.has(record.id));
 
         if (!allowedSource) return false;
 
@@ -1177,7 +1257,8 @@ tr.recently-deleted td { text-decoration:none; }
       const duplicate = duplicateKeys.has(`${r.studentId}__${r.course}`);
       const payState = paymentState(r);
       const isDeleted = r._recentlyDeleted === true;
-      const isPromotion = r._collection === "FakePromotions";
+      const isPromotion = r._collection === "students";
+      const canUndoMigration = isPromotion && sessionMigratedIds.has(r.id) && migrationUndo.has(r.id);
       return `<tr data-record-id="${escapeHtml(r.id)}" class="${isDeleted ? "recently-deleted" : ""}">
         <td class="select-column"><input class="row-select" type="checkbox" data-id="${escapeHtml(r.id)}" aria-label="تحديد سجل ${escapeHtml(r.arName)}" ${selectedRecordIds.has(r.id) ? "checked" : ""} ${isDeleted ? "disabled" : ""}></td>
         <td>${index + 1}</td>
@@ -1205,7 +1286,7 @@ tr.recently-deleted td { text-decoration:none; }
               <button class="action-btn payment-button" data-id="${escapeHtml(r.id)}" type="button">الدفع</button>
               <button class="action-btn migrate-button" data-id="${escapeHtml(r.id)}" type="button">ترحيل</button>
               <button class="action-btn row-delete-button" data-id="${escapeHtml(r.id)}" type="button">حذف</button>
-              ${isPromotion ? `<button class="action-btn undo-migration-button" data-id="${escapeHtml(r.id)}" type="button">↶ تراجع عن الترحيل</button>` : ""}
+              ${canUndoMigration ? `<button class="action-btn undo-migration-button" data-id="${escapeHtml(r.id)}" type="button">↶ تراجع عن الترحيل</button>` : ""}
             `
           }
         </div></td>
@@ -1394,9 +1475,22 @@ tr.recently-deleted td { text-decoration:none; }
     const submit = event.currentTarget.querySelector('button[type="submit"]');
     submit.disabled = true;
     try {
-      const promoted = await Promise.all(chosen.map(record => window.PrudleDB.addPromotion(record, targetCourse)));
-      records.push(...promoted);
-      lastMigratedRecords = promoted.map(record => ({ ...record }));
+      const migratedResults = await window.PrudleDB.migrateToStudents(chosen, targetCourse);
+      const sourceIds = new Set(chosen.map(record => record.id));
+      records = records.filter(record => !sourceIds.has(record.id));
+
+      const migratedRecords = migratedResults.map(item => item.studentRecord);
+      records.push(...migratedRecords);
+
+      lastMigratedRecords = migratedResults.map(item => ({
+        recordId: item.studentRecord.id,
+        undo: item.undo
+      }));
+      migratedResults.forEach(item => {
+        sessionMigratedIds.add(item.studentRecord.id);
+        migrationUndo.set(item.studentRecord.id, item.undo);
+      });
+
       populateCreatedDateFilter();
       populateBulkTargetCourses();
       selectedRecordIds.clear(); pendingMigrationIds = [];
@@ -1404,9 +1498,9 @@ tr.recently-deleted td { text-decoration:none; }
       updateCascadingFilters();
       renderResults();
       updateHistoryActions();
-      showToast(`تم ترحيل ${promoted.length} سجل. يمكنك التراجع من أمام السجل أو من أعلى الجدول.`);
+      showToast(`تم ترحيل ${migratedRecords.length} سجل إلى students وحذف المصدر القديم. التراجع متاح حتى تحديث الصفحة فقط.`);
     } catch (error) {
-      console.error(error); showToast("تعذر حفظ الترحيل في FakePromotions.", "error");
+      console.error(error); showToast("تعذر إتمام الترحيل إلى students. لم يتم اعتماد عملية غير مكتملة.", "error");
     } finally { submit.disabled = false; }
   }
   async function deleteSelectedRecords() {
@@ -1484,35 +1578,114 @@ tr.recently-deleted td { text-decoration:none; }
     }
   }
 
-  async function undoMigrationRecords(promotedRecords) {
-    if (!promotedRecords.length) return;
+  async function undoMigrationRecords(items) {
+    if (!items.length) return;
     try {
-      await window.PrudleDB.softDeleteRecords(promotedRecords);
-      const ids = new Set(promotedRecords.map(r => r.id));
-      records = records.filter(record => !ids.has(record.id));
-      lastMigratedRecords = lastMigratedRecords.filter(r => !ids.has(r.id));
+      const undoEntries = items
+        .map(item => item.undo || migrationUndo.get(item.recordId || item.id))
+        .filter(Boolean);
+      if (undoEntries.length !== items.length) {
+        showToast("التراجع غير متاح بعد تحديث الصفحة.", "error");
+        return;
+      }
+
+      await window.PrudleDB.undoStudentMigrations(undoEntries);
+
+      const studentDocIds = new Set(undoEntries.map(entry => entry.studentDocId));
+      const recordIds = new Set(items.map(item => item.recordId || item.id));
+      records = records.filter(record => !recordIds.has(record.id));
+
+      // نعيد السجلات الأصلية للواجهة فورًا من النسخة الموجودة في UNDO فقط.
+      undoEntries.forEach(entry => {
+        const fakeDoc = {
+          id: entry.sourceDocId,
+          data: () => entry.sourceData
+        };
+        records.push(normalizeUndoRecord(fakeDoc, entry.sourceCollection));
+      });
+
+      recordIds.forEach(id => {
+        sessionMigratedIds.delete(id);
+        migrationUndo.delete(id);
+      });
+      lastMigratedRecords = lastMigratedRecords.filter(item => !recordIds.has(item.recordId));
       selectedRecordIds.clear();
       populateCreatedDateFilter();
       updateCascadingFilters();
       populateBulkTargetCourses();
       renderResults();
       updateBulkToolbar();
-      showToast(`تم التراجع عن ترحيل ${promotedRecords.length} سجل.`);
+      showToast(`تم التراجع عن ترحيل ${undoEntries.length} سجل وإعادة المصدر القديم.`);
     } catch (error) {
       console.error(error);
       showToast("تعذر التراجع عن الترحيل.", "error");
     }
   }
 
+  // نسخة واجهة من السجل الأصلي المعاد؛ تستخدم نفس منطق التطبيع بدون أي حفظ إضافي.
+  function normalizeUndoRecord(fakeDoc, collection) {
+    const data = fakeDoc.data();
+    const nested = data.course && typeof data.course === "object" ? data.course : {};
+    const from = data.fromCourse && typeof data.fromCourse === "object" ? data.fromCourse : {};
+    const branch = normalizeBranchUI(firstUI(data.branch, data.Branch, nested.branch));
+    const section = normalizeSectionUI(firstUI(data.section, data.Section, nested.section));
+    const program = normalizeProgramUI(firstUI(data.program, data.Program, nested.program));
+    const level = textUI(firstUI(data.level, data.TrainingCourse, data.fakeLevel, nested.name, data.currentLevel, data.currentCourse)) || "غير محدد";
+    const period = textUI(firstUI(data.period, data.Period, data.fakePeriod, nested.period, data.fromPeriod)) || "غير محدد";
+    const startDate = dateValueUI(firstUI(data.startDate, data.StartingDate, nested.startDate)) || "غير محدد";
+    const trainer = textUI(firstUI(data.trainer, data.Trainer, data.fakeTrainer, nested.trainer)) || "غير محدد";
+    const courseKey = textUI(firstUI(data.courseKey, nested.id, data.courseId, `${branch}|${section}|${program}|${level}|${period}|${startDate}`));
+    const fees = normalizeMoney(firstUI(data.fees, data.CourseFee, nested.fees));
+    const paid = normalizeMoney(firstUI(data.paid, data.PaidAmount, data.paidAmount));
+    return {
+      id: `${collection}:${fakeDoc.id}`, _docId: fakeDoc.id, _collection: collection,
+      studentId: textUI(firstUI(data.studentId, data.iqama, data.StudentID, data.idNumber)),
+      arName: textUI(firstUI(data.arName, data.name_ar, data.nameAr, data.nameArabic)),
+      enName: textUI(firstUI(data.enName, data.name_en, data.nameEn, data.name)),
+      phone: textUI(data.phone), email: textUI(data.email),
+      birthdate: dateValueUI(firstUI(data.birthdate, data.Birthdate, data.DateOfBirth)), age: textUI(data.age),
+      nationality: textUI(firstUI(data.nationality, data.Nationality)), healthStatus: textUI(firstUI(data.healthStatus, data.HealthStatus)),
+      educationLevel: textUI(firstUI(data.educationLevel, data.EducationLevel)), heardAbout: textUI(firstUI(data.heardAbout, data.HeardAbout, data.HowDidYouHear)),
+      courseType: textUI(firstUI(data.courseType, data.CourseType, data.mode, nested.courseType)) || "غير محدد",
+      branch, section, program, level, period, startDate, trainer,
+      room: textUI(firstUI(data.room, data.Room, nested.room)), course: courseKey,
+      courseName: textUI(firstUI(data.courseName, nested.name, data.TrainingCourse, data.fakeLevel, data.currentCourse, level)),
+      status: normalizeStatusUI(data.status, data.grade, collection), grade: data.grade ?? null,
+      previousCourse: textUI(firstUI(typeof data.previousCourse === "object" ? data.previousCourse?.name : data.previousCourse, from.name, data.fromLevel)) || "—",
+      targetCourse: textUI(data.targetCourse), fees, paid,
+      paymentMethod: textUI(firstUI(data.paymentMethod, data.PaymentMethod, data.PaymentType, data.paymentType)) || "غير محدد",
+      createdAt: firstUI(data.createdAt, data.created_at, data.registrationDate, data.registeredAt, data.submittedAt, data.timestamp, data.date, data.Date, data.TermsAcceptedAt),
+      createdDate: dateValueUI(firstUI(data.createdAt, data.created_at, data.registrationDate, data.registeredAt, data.submittedAt, data.timestamp, data.date, data.Date, data.TermsAcceptedAt)),
+      createdAtText: dateTimeValueUI(firstUI(data.createdAt, data.created_at, data.registrationDate, data.registeredAt, data.submittedAt, data.timestamp, data.date, data.Date, data.TermsAcceptedAt)),
+      createdAtMs: dateMillisUI(firstUI(data.createdAt, data.created_at, data.registrationDate, data.registeredAt, data.submittedAt, data.timestamp, data.date, data.Date, data.TermsAcceptedAt))
+    };
+  }
+
+  function textUI(value) { return String(value ?? "").trim(); }
+  function firstUI(...values) { return values.find(value => value !== undefined && value !== null && textUI(value) !== "") ?? ""; }
+  function toJsDateUI(value) { try { if (!value) return null; if (typeof value.toDate === "function") return value.toDate(); if (typeof value === "object" && value.seconds != null) return new Date(Number(value.seconds)*1000 + Math.floor(Number(value.nanoseconds||0)/1000000)); const d=new Date(value); return Number.isNaN(d.getTime())?null:d; } catch(_) { return null; } }
+  function dateValueUI(value) { const d=toJsDateUI(value); if(!d)return ""; const p=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Riyadh",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(d); const g=t=>p.find(x=>x.type===t)?.value||""; return `${g("year")}-${g("month")}-${g("day")}`; }
+  function dateTimeValueUI(value) { const d=toJsDateUI(value); return d ? new Intl.DateTimeFormat("ar-SA-u-ca-gregory",{timeZone:"Asia/Riyadh",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true}).format(d) : ""; }
+  function dateMillisUI(value) { const d=toJsDateUI(value); return d ? d.getTime() : 0; }
+  function normalizeBranchUI(value) { const raw=textUI(value), key=raw.toLowerCase().replace(/[\s_–—-]+/g,""); return ({alhamdaniya:"الحمدانية",hamdaniya:"الحمدانية","الحمدانية":"الحمدانية",alzahra:"الزهراء",zahra:"الزهراء","الزهراء":"الزهراء",aljumum:"الجموم",jumum:"الجموم","الجموم":"الجموم",online:"المنصة الإلكترونية","اونلاين":"المنصة الإلكترونية","المنصةالإلكترونية":"المنصة الإلكترونية"})[key]||raw||"غير محدد"; }
+  function normalizeSectionUI(value) { const raw=textUI(value), key=raw.toLowerCase(); return ({men:"الرجال",man:"الرجال","رجال":"الرجال","الرجال":"الرجال",women:"السيدات",woman:"السيدات","نساء":"السيدات","السيدات":"السيدات",kids:"الأطفال",children:"الأطفال","اطفال":"الأطفال","أطفال":"الأطفال","الأطفال":"الأطفال"})[key]||raw||"غير محدد"; }
+  function normalizeProgramUI(value) { const raw=textUI(value), key=raw.toLowerCase(); return ({adults:"برنامج اللغة الإنجليزية العامة","general english":"برنامج اللغة الإنجليزية العامة","برنامج اللغة الإنجليزية العامة":"برنامج اللغة الإنجليزية العامة",conversation:"برنامج المحادثة","برنامج المحادثة":"برنامج المحادثة",intensive:"البرنامج المكثف الصباح","intensive morning":"البرنامج المكثف الصباح","البرنامج المكثف الصباح":"البرنامج المكثف الصباح",mastery:"باقة الإتقان الشامل","باقة الإتقان الشامل":"باقة الإتقان الشامل"})[key]||raw||"غير محدد"; }
+  function normalizeStatusUI(value, grade, collection) { const raw=textUI(value).toLowerCase(); if(["pass","passed","ناجح"].includes(raw))return "ناجح"; if(["fail","failed","راسب"].includes(raw))return "راسب"; if(["new","جديد","not_recorded"].includes(raw))return "جديد"; if(collection==="FakePromotions"&&Number.isFinite(Number(grade)))return Number(grade)>=65?"ناجح":"راسب"; return "جديد"; }
+
   async function undoMigrationRow(recordId) {
-    const record = records.find(r => r.id === recordId && r._collection === "FakePromotions");
+    const record = records.find(r =>
+      r.id === recordId &&
+      r._collection === "students" &&
+      sessionMigratedIds.has(r.id) &&
+      migrationUndo.has(r.id)
+    );
     if (!record) return;
     if (!window.confirm(`التراجع عن ترحيل ${record.arName || "الطالب"}؟`)) return;
-    await undoMigrationRecords([record]);
+    await undoMigrationRecords([{ recordId: record.id, undo: migrationUndo.get(record.id) }]);
   }
 
   async function undoLastMigration() {
-    const batch = lastMigratedRecords.map(record => ({ ...record }));
+    const batch = lastMigratedRecords.map(item => ({ ...item }));
     if (!batch.length) return;
     if (!window.confirm(`التراجع عن ترحيل المجموعة الأخيرة (${batch.length} سجل)؟`)) return;
     await undoMigrationRecords(batch);
@@ -1677,6 +1850,8 @@ tr.recently-deleted td { text-decoration:none; }
     selectedRecordIds.clear();
     lastDeletedRecords = [];
     lastMigratedRecords = [];
+    sessionMigratedIds.clear();
+    migrationUndo.clear();
     recentlyDeleted.clear();
 
     records.forEach(record => {
