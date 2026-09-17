@@ -548,7 +548,7 @@ tr.recently-deleted td { text-decoration:none; }
     if (["pass", "passed", "ناجح"].includes(raw)) return "ناجح";
     if (["fail", "failed", "راسب"].includes(raw)) return "راسب";
     if (["new", "جديد", "not_recorded"].includes(raw)) return "جديد";
-    if (collection === "FakePromotions" && Number.isFinite(Number(grade))) return Number(grade) >= 65 ? "ناجح" : "راسب";
+    if (collection === "PrudlePromotions2026" && Number.isFinite(Number(grade))) return Number(grade) >= 65 ? "ناجح" : "راسب";
     return "جديد";
   }
   function storedStatus(value) {
@@ -610,7 +610,7 @@ tr.recently-deleted td { text-decoration:none; }
       )) || "—",
       targetCourse: text(first(
         data.targetCourse,
-        collection === "FakePromotions" ? first(nested.name, data.fakeLevel) : ""
+        collection === "PrudlePromotions2026" ? first(nested.name, data.fakeLevel) : ""
       )),
       fees,
       paid,
@@ -662,16 +662,7 @@ tr.recently-deleted td { text-decoration:none; }
         data.TermsAcceptedAt
       )),
 
-      // تمييز سجلات نموذج "تسجيل الطلاب | فرع الجموم" البسيط
-      // حتى لا تظهر داخل نظام الإدارة الحالي.
-      _excludeSimpleJumumRegistration:
-        collection === "FakeRegistrations" &&
-        String(first(data.Branch, data.branch, "")).trim() === "Al-Jumum" &&
-        (
-          Object.prototype.hasOwnProperty.call(data, "LevelChoiceMode") ||
-          Object.prototype.hasOwnProperty.call(data, "NeedsPlacementTest")
-        ) &&
-        String(first(data.CourseType, data.courseType, data.mode, "")).trim() === ""
+      _excludeSimpleJumumRegistration: false
     };
   }
 
@@ -732,12 +723,12 @@ tr.recently-deleted td { text-decoration:none; }
 
   async function load() {
     const [registrations, promotions, courseDocs] = await Promise.all([
-      readCollection("FakeRegistrations"), readCollection("FakePromotions"), readCollection("Courses")
+      readCollection("PrudleRegistrations2026"), readCollection("PrudlePromotions2026"), readCollection("Courses")
     ]);
     if (registrations.error && promotions.error) throw registrations.error;
     const records = [
-      ...registrations.docs.filter(doc => doc.data()._deleted !== true).map(doc => normalizeRecord(doc, "FakeRegistrations")),
-      ...promotions.docs.filter(doc => doc.data()._deleted !== true).map(doc => normalizeRecord(doc, "FakePromotions"))
+      ...registrations.docs.filter(doc => doc.data()._deleted !== true).map(doc => normalizeRecord(doc, "PrudleRegistrations2026")),
+      ...promotions.docs.filter(doc => doc.data()._deleted !== true).map(doc => normalizeRecord(doc, "PrudlePromotions2026"))
     ];
     const courses = dedupeCourses([
       ...courseDocs.docs.map(normalizeCourse),
@@ -812,13 +803,13 @@ tr.recently-deleted td { text-decoration:none; }
   }
 
   async function addRegistration(record, course) {
-    const ref = await db.collection("FakeRegistrations").add({
+    const ref = await db.collection("PrudleRegistrations2026").add({
       ...payloadFor(record, course),
       TermsAccepted: true,
       createdAt: global.firebase.firestore.FieldValue.serverTimestamp()
     });
     const doc = await ref.get();
-    return normalizeRecord(doc, "FakeRegistrations");
+    return normalizeRecord(doc, "PrudleRegistrations2026");
   }
 
   async function updateRecord(record) {
@@ -1139,7 +1130,7 @@ tr.recently-deleted td { text-decoration:none; }
       /*
         ===== فرع الجموم =====
         عند اختيار "الجموم" نعرض السجلات بنفس آلية كود الترحيل السابق:
-        1) فقط FakeRegistrations و FakePromotions
+        1) فقط PrudleRegistrations2026 و PrudlePromotions2026
         2) حضوري فقط
         3) إذا لم تُحدد حالة الطالب: يظهر "جديد" فقط
         4) عند اختيار ناجح/راسب/جديد: يظهر الاختيار فقط
@@ -1147,8 +1138,8 @@ tr.recently-deleted td { text-decoration:none; }
       if (filters.branch === "الجموم") {
 
         const allowedSource =
-          record._collection === "FakeRegistrations" ||
-          record._collection === "FakePromotions" ||
+          record._collection === "PrudleRegistrations2026" ||
+          record._collection === "PrudlePromotions2026" ||
           (record._collection === "students" && sessionMigratedIds.has(record.id));
 
         if (!allowedSource) return false;
@@ -1413,7 +1404,7 @@ tr.recently-deleted td { text-decoration:none; }
       populateCreatedDateFilter();
       populateBulkTargetCourses();
       document.getElementById("addDialog").close(); updateCascadingFilters();
-      showToast(prior ? "تمت الإضافة في FakeRegistrations وربط الدورة السابقة." : "تمت إضافة السجل في FakeRegistrations بنجاح.");
+      showToast(prior ? "تمت الإضافة في PrudleRegistrations2026 وربط الدورة السابقة." : "تمت إضافة السجل في PrudleRegistrations2026 بنجاح.");
       if (hasAppliedFilters) renderResults();
     } catch (error) {
       console.error(error); showToast("تعذر حفظ السجل في Firestore. تحقق من صلاحيات الحفظ.", "error");
@@ -1670,7 +1661,7 @@ tr.recently-deleted td { text-decoration:none; }
   function normalizeBranchUI(value) { const raw=textUI(value), key=raw.toLowerCase().replace(/[\s_–—-]+/g,""); return ({alhamdaniya:"الحمدانية",hamdaniya:"الحمدانية","الحمدانية":"الحمدانية",alzahra:"الزهراء",zahra:"الزهراء","الزهراء":"الزهراء",aljumum:"الجموم",jumum:"الجموم","الجموم":"الجموم",online:"المنصة الإلكترونية","اونلاين":"المنصة الإلكترونية","المنصةالإلكترونية":"المنصة الإلكترونية"})[key]||raw||"غير محدد"; }
   function normalizeSectionUI(value) { const raw=textUI(value), key=raw.toLowerCase(); return ({men:"الرجال",man:"الرجال","رجال":"الرجال","الرجال":"الرجال",women:"السيدات",woman:"السيدات","نساء":"السيدات","السيدات":"السيدات",kids:"الأطفال",children:"الأطفال","اطفال":"الأطفال","أطفال":"الأطفال","الأطفال":"الأطفال"})[key]||raw||"غير محدد"; }
   function normalizeProgramUI(value) { const raw=textUI(value), key=raw.toLowerCase(); return ({adults:"برنامج اللغة الإنجليزية العامة","general english":"برنامج اللغة الإنجليزية العامة","برنامج اللغة الإنجليزية العامة":"برنامج اللغة الإنجليزية العامة",conversation:"برنامج المحادثة","برنامج المحادثة":"برنامج المحادثة",intensive:"البرنامج المكثف الصباح","intensive morning":"البرنامج المكثف الصباح","البرنامج المكثف الصباح":"البرنامج المكثف الصباح",mastery:"باقة الإتقان الشامل","باقة الإتقان الشامل":"باقة الإتقان الشامل"})[key]||raw||"غير محدد"; }
-  function normalizeStatusUI(value, grade, collection) { const raw=textUI(value).toLowerCase(); if(["pass","passed","ناجح"].includes(raw))return "ناجح"; if(["fail","failed","راسب"].includes(raw))return "راسب"; if(["new","جديد","not_recorded"].includes(raw))return "جديد"; if(collection==="FakePromotions"&&Number.isFinite(Number(grade)))return Number(grade)>=65?"ناجح":"راسب"; return "جديد"; }
+  function normalizeStatusUI(value, grade, collection) { const raw=textUI(value).toLowerCase(); if(["pass","passed","ناجح"].includes(raw))return "ناجح"; if(["fail","failed","راسب"].includes(raw))return "راسب"; if(["new","جديد","not_recorded"].includes(raw))return "جديد"; if(collection==="PrudlePromotions2026"&&Number.isFinite(Number(grade)))return Number(grade)>=65?"ناجح":"راسب"; return "جديد"; }
 
   async function undoMigrationRow(recordId) {
     const record = records.find(r =>
@@ -1834,16 +1825,7 @@ tr.recently-deleted td { text-decoration:none; }
     empty.querySelector("p").textContent = message;
   }
   function applyLoadedData(data) {
-    records = Array.isArray(data.records)
-      ? data.records.filter(record => record._excludeSimpleJumumRegistration !== true)
-      : [];
-
-    // لا تعرض سجلات صفحة "مدخلات فرع الجموم":
-    // FakeRegistrations + Branch = Al-Jumum
-    records = records.filter(record => !(
-      record.collection === "FakeRegistrations" &&
-      String(record.branch || "").trim() === "الجموم"
-    ));
+    records = Array.isArray(data.records) ? data.records : [];
 
     courses = Array.isArray(data.courses) ? data.courses : [];
     courseMap = new Map(courses.map(course => [course.course, course]));
@@ -1875,7 +1857,7 @@ tr.recently-deleted td { text-decoration:none; }
     renderResults();
   }
   async function initializeData() {
-    setEmptyMessage("جاري تحميل السجلات", "يتم الآن قراءة FakeRegistrations وFakePromotions.");
+    setEmptyMessage("جاري تحميل السجلات", "يتم الآن قراءة PrudleRegistrations2026 وPrudlePromotions2026.");
     updateCascadingFilters(); renderResults();
     try {
       const data = await window.PrudleDB.load();
@@ -1885,7 +1867,7 @@ tr.recently-deleted td { text-decoration:none; }
       console.error(error);
       records = []; courses = []; courseMap = new Map(); updateCascadingFilters(); renderResults();
       setEmptyMessage("تعذر تحميل البيانات", "تحقق من اتصال الإنترنت وصلاحيات Firestore للمجموعتين.");
-      showToast("تعذر قراءة FakeRegistrations وFakePromotions.", "error");
+      showToast("تعذر قراءة PrudleRegistrations2026 وPrudlePromotions2026.", "error");
     }
   }
 
